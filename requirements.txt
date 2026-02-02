@@ -1,0 +1,8 @@
+pip~=26.0
+setuptools~=80.3.1
+numpy~=2.2.6
+pillow~=12.1.0
+PySide6~=6.10.2
+shiboken6~=6.10.2
+PyOpenGL~=3.1.10
+fbx~=2020.3.7
