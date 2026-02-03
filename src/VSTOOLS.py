@@ -6,7 +6,6 @@ import io
 import numpy as np
 
 
-
 # Constants
 TIME_SCALE = 1
 ROT13_TO_RAD = (1 / 4096) * math.pi

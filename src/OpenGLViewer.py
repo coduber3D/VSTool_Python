@@ -8,7 +8,7 @@ from src.FBX_exporter import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
 import math
-
+from src.vs_strings import *
 import numpy as np
 
 
@@ -16,6 +16,9 @@ class GLViewport(QOpenGLWidget):
     def __init__(self, parent):
         super().__init__()
 
+        self.program = None
+        self.bg_shader = None
+        self.bg_texture = None
         self.meshes = []
         self.last_pos = None
         self.grey_background = False
@@ -94,7 +97,6 @@ class GLViewport(QOpenGLWidget):
         glBindTexture(GL_TEXTURE_2D, 0)
         return tex_id
 
-
     def load_mesh(self, vertices, uvs, faces, colors=None):
         ctx = self.context()
         if not ctx or not ctx.isValid():
@@ -167,7 +169,7 @@ class GLViewport(QOpenGLWidget):
         glDepthMask(GL_TRUE)
         glEnable(GL_DEPTH_TEST)
         self.update()
-        
+
     def export_fbx_scene(self, path):
         if self.meshes:
             export_fbx_scene(path, self.meshes)
@@ -179,148 +181,31 @@ class GLViewport(QOpenGLWidget):
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-
         glClearColor(0, 0, 0, 1.0)
 
         glEnable(GL_CULL_FACE)
         glCullFace(GL_BACK)  # Cull back faces
         glFrontFace(GL_CCW)
 
-
-        #----- BACKGROUND SHADER-----#
+        # ----- BACKGROUND SHADER-----#
         self.bg_shader = QOpenGLShaderProgram()
         self.bg_shader.addShaderFromSourceCode(
-            QOpenGLShader.ShaderTypeBit.Vertex,
-            """#version 330 core
-                out vec2 v_uv;
-                
-                void main()
-                {
-                    vec2 pos = vec2(
-                        (gl_VertexID << 1) & 2,
-                        gl_VertexID & 2
-                    );
-                
-                    v_uv = pos;
-                    gl_Position = vec4(pos * 7.5 - 1.0, 0.0, 1.0);
-                }"""
+            QOpenGLShader.ShaderTypeBit.Vertex, BG_SHADER_VERTEX
         )
         self.bg_shader.addShaderFromSourceCode(
-            QOpenGLShader.ShaderTypeBit.Fragment,"""#version 330 core
-                in vec2 v_uv;
-                out vec4 FragColor;
-                uniform float u_time;
-                
-                uniform sampler2D u_bgTexture;
-                
-                void main()
-                {
-                    vec2 uv = v_uv * 4.0;               // tile amount
-                    vec4 tex = texture(u_bgTexture, uv);
-                    tex = tex + clamp(tex.b * sin(u_time*0.2),-0.1,0.5);
-                    // subtle vignette
-                    float d = distance(v_uv, vec2(0.5));
-                    tex.rgb *= smoothstep(0.8, 0.4, d);
-                
-                    FragColor = tex;
-                }"""
+            QOpenGLShader.ShaderTypeBit.Fragment, BG_SHADER_FRAG
         )
         self.bg_shader.link()
-        self.bg_texture = self.load_gl_texture("vagrant_background.jpg")
-
-
+        self.bg_texture = self.load_gl_texture("ui_elements/vagrant_background.jpg")
 
         # ---- SHADER ----
         self.program = QOpenGLShaderProgram()
         self.program.setUniformValue("u_use_skinning", True)
         self.program.addShaderFromSourceCode(
-            QOpenGLShader.ShaderTypeBit.Vertex,
-            """
-            #version 330 core
-
-            layout (location = 0) in vec3 position;
-            layout (location = 1) in vec2 texcoord;
-            layout (location = 2) in vec4 color;
-            
-            /* --- Skinning attributes --- */
-            layout (location = 3) in ivec4 bone_ids;
-            layout (location = 4) in vec4 bone_weights;
-            
-            /* --- Uniforms --- */
-            uniform mat4 u_mvp;
-            uniform mat4 u_bones[100];
-            uniform bool u_use_skinning;
-            
-            /* --- Outputs --- */
-            out vec2 v_uv;
-            out vec4 v_color;
-            
-            void main()
-            {
-                vec4 pos = vec4(position, 1.0);
-            
-                if (u_use_skinning)
-                {
-                    mat4 skin =
-                        bone_weights.x * u_bones[bone_ids.x] +
-                        bone_weights.y * u_bones[bone_ids.y] +
-                        bone_weights.z * u_bones[bone_ids.z] +
-                        bone_weights.w * u_bones[bone_ids.w];
-            
-                    pos = skin * pos;
-                }
-            
-                v_uv = texcoord;
-                v_color = color;
-                gl_Position = u_mvp * pos;
-            }
-            """
-        )
+            QOpenGLShader.ShaderTypeBit.Vertex, ASSET_SHADER_VERTEX)
 
         self.program.addShaderFromSourceCode(
-            QOpenGLShader.ShaderTypeBit.Fragment,
-            """
-            #version 330 core
-
-            in vec2 v_uv;
-            in vec4 v_color;
-            out vec4 FragColor;
-            
-            uniform sampler2D u_texture;
-            
-            uniform float u_time;
-            uniform float u_scanlineIntensity;
-            uniform float u_scanlineCount;
-            uniform bool  u_useVertexColor;
-            
-            uniform bool  u_disableTexture;
-            
-            void main()
-            {
-                vec4 texel = vec4(1.0);
-                
-                if (u_disableTexture)
-                {
-                    vec2 new_uv = vec2(v_uv.x, 1.0 - v_uv.y);
-                    texel = texture(u_texture, new_uv);
-                
-                    if (texel.a < 0.5)
-                        discard;
-                }
-                vec3 color = texel.rgb;
-            
-                if (u_useVertexColor)
-                    color *= (v_color.rgb * 2.0);
-            
-                // Scanlines
-                float scan = sin(gl_FragCoord.y * u_scanlineCount * 0.01);
-                scan = mix(1.0, scan, u_scanlineIntensity);
-                color *= scan;
-            
-                FragColor = vec4(color, texel.a * v_color.a);
-            }
-            """
-        )
+            QOpenGLShader.ShaderTypeBit.Fragment, ASSET_SHADER_FRAG)
 
         if not self.program.link():
             raise RuntimeError(self.program.log())
@@ -340,7 +225,6 @@ class GLViewport(QOpenGLWidget):
                 if m.vao:
                     glDeleteVertexArrays(1, [m.vao])
         self.meshes = []
-
 
         # --- Delete VBO ---
         if self.vbo:
@@ -365,7 +249,7 @@ class GLViewport(QOpenGLWidget):
 
         self.doneCurrent()
         self.update()
-  
+
     def _upload_mesh(self):
         if self.vertices is None or self.faces is None:
             return
@@ -459,15 +343,16 @@ class GLViewport(QOpenGLWidget):
 
         # ---- Shader ----
         self.program.bind()
-        
+
         if self.grey_background:
             glClearColor(0.1, 0.1, 0.1, 1.0)
             self.update()
         else:
             glClearColor(0, 0, 0, 1.0)
             self.update()
-        def set_uniform(name, fn):
-            loc = glGetUniformLocation(self.program.programId(), name)
+
+        def set_uniform(uniform_name, fn):
+            loc = glGetUniformLocation(self.program.programId(), uniform_name)
             if loc != -1:
                 fn(loc)
 
@@ -503,7 +388,6 @@ class GLViewport(QOpenGLWidget):
                     lambda loc: glUniform1i(loc, 0)
                     )
 
-
         # ---- Draw ----
         for mesh in self.meshes:
             glBindTexture(GL_TEXTURE_2D, mesh.texture_id)
@@ -512,7 +396,6 @@ class GLViewport(QOpenGLWidget):
 
         glBindVertexArray(0)
         glBindTexture(GL_TEXTURE_2D, 0)
-
 
         self.program.release()
 
@@ -541,7 +424,6 @@ class GLViewport(QOpenGLWidget):
 
         glBindTexture(GL_TEXTURE_2D, 0)
         return tex_id
-
 
     """CAMERA CONTROLS"""
 
@@ -602,7 +484,7 @@ class GLViewport(QOpenGLWidget):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             # FOV
             self.fov -= event.angleDelta().y() * 0.01
-            self.fov = max(15, min(120, self.fov))
+            self.fov = max(15, min(120, int(self.fov)))
         else:
             # Zoom (distance-based)
             self.distance -= event.angleDelta().y() * 0.1
@@ -613,7 +495,6 @@ class GLViewport(QOpenGLWidget):
     def updateCamera(self):
         if not self.keys:
             return
-
 
         forward, right, up = self.cameraVectors()
 
@@ -635,8 +516,6 @@ class GLViewport(QOpenGLWidget):
             move -= up
         if Qt.Key.Key_E in self.keys:
             move += up
-            
-
 
         if not move.isNull():
             move.normalize()
@@ -647,7 +526,7 @@ class GLViewport(QOpenGLWidget):
 
 
 class GLMesh:
-    def __init__(self, vertices, uvs, faces, colors, texture_id,material_id, skinned_mesh=None, skeleton=None):
+    def __init__(self, vertices, uvs, faces, colors, texture_id, material_id, skinned_mesh=None, skeleton=None):
         self.vertices = vertices
         self.uvs = uvs
         self.faces = faces
@@ -698,4 +577,3 @@ class GLMesh:
         glEnableVertexAttribArray(2)
 
         glBindVertexArray(0)
-

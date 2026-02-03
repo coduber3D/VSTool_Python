@@ -1,6 +1,13 @@
-import os, sys,  json, glob, random, uuid
+import glob
+import json
+import os
+import random
+import sys
+import uuid
 
-from PySide6.QtGui import  QPixmap, QFontDatabase, QFont, QColor, QPainterPath, QPainter, QFontMetrics, QImage
+from PIL.ImageQt import ImageQt
+from PySide6.QtCore import Qt, QTimer, QPoint, QFile, QTextStream
+from PySide6.QtGui import QPixmap, QFontDatabase, QFont, QColor, QPainterPath, QPainter, QFontMetrics, QImage
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QGroupBox,
@@ -8,194 +15,29 @@ from PySide6.QtWidgets import (
     QSpinBox, QFileDialog,
     QScrollArea, QComboBox
 )
-from PySide6.QtCore import Qt, QTimer, QPoint
-import numpy as np
 
-from src.SEQ import SEQ
-from src.VSTOOLS import bytearray_to_image, export_png, ROT13_TO_RAD
-
-from src.OpenGLViewer import GLViewport
 from src.MPD import MPD
-from src.ZND import ZND
-from src.WEP import WEP
-from src.SHP import SHP
+from src.OpenGLViewer import GLViewport
 from src.Reader import Reader
-from PIL.ImageQt import ImageQt
+from src.SEQ import SEQ
+from src.SHP import SHP
+from src.VSTOOLS import bytearray_to_image, export_png
+from src.WEP import WEP
+from src.ZND import ZND
+from src.vs_strings import HUD_TEXT
 
 SEQ_TO_DEG = 360.0 / 4096.0
-SEED = random.randint(0,100)
-
-def update_seed():
-    SEED = random.randint(0,100)
-
-def drawPixelatedText(painter: QPainter, text: str, x: int, y: int, font: QFont, scale: int = 3,
-                      color: QColor = QColor(0, 0, 0)):
-    """
-    Draws pixelated text by rendering it at small size then scaling up.
-    :param painter: QPainter to draw on
-    :param text: text to draw
-    :param x, y: top-left position
-    :param font: QFont
-    :param scale: pixelation factor (higher = blockier)
-    :param color: text color
-    """
-    # Measure text
-    metrics = QFontMetrics(font)
-    text_width = metrics.horizontalAdvance(text)
-    text_height = metrics.height()
-
-    # Create a small image
-    img = QImage(text_width, text_height, QImage.Format.Format_ARGB32)
-    img.fill(Qt.GlobalColor.transparent)
-
-    temp_painter = QPainter(img)
-    temp_painter.setFont(font)
-    temp_painter.setPen(color)
-    temp_painter.drawText(0, metrics.ascent(), text)
-    temp_painter.end()
-
-    # Scale up with a nearest-neighbor to pixelate
-    pixelated = img.scaled(
-        text_width * scale,
-        text_height * scale,
-        Qt.AspectRatioMode.IgnoreAspectRatio,
-        Qt.TransformationMode.FastTransformation  # must be positional, not keyword
-    )
-
-    painter.drawImage(x, y, pixelated)
-
-def load_obj(path):
-    vertices = []
-    uvs = []
-    faces = []
-
-    with open(path, "r") as f:
-        for line in f:
-            if line.startswith("v "):
-                vertices.append(list(map(float, line.split()[1:4])))
-            elif line.startswith("vt "):
-                uvs.append(list(map(float, line.split()[1:3])))
-            elif line.startswith("f "):
-                face = []
-                for v in line.split()[1:]:
-                    # OBJ format: v/vt/vn (vn optional)
-                    vals = v.split("/")
-                    v_idx = int(vals[0]) - 1
-                    vt_idx = int(vals[1]) - 1 if len(vals) > 1 and vals[1] else 0
-                    face.append((v_idx, vt_idx))
-                faces.append(face)
-
-    return np.array(vertices, dtype=np.float32), np.array(uvs, dtype=np.float32), faces
-
-
-class ArrowComboWidget(QWidget):
-    def __init__(self, parent, items_list=None, opener=None):
-        super().__init__()
-        self.main_widget = parent
-        if items_list is None:
-            items_list = []
-        self.weapons_name = json.load(open('VagrantStory_data/weapon_name_map.txt'))
-
-        self.opener = opener
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        self.left_button = QPushButton("◀")
-        self.right_button = QPushButton("▶")
-        self.combo = QComboBox()
-
-        self.left_button.setFixedWidth(30)
-        self.right_button.setFixedWidth(30)
-
-        self.combo.addItems(list(self.weapons_name.keys()))
-
-        layout.addWidget(self.left_button)
-        layout.addWidget(self.combo)
-        layout.addWidget(self.right_button)
-
-        self.combo.currentTextChanged.connect(self.update_mesh)
-        self.left_button.clicked.connect(self.prev_item)
-        self.right_button.clicked.connect(self.next_item)
-
-    def update_mesh(self):
-        self.main_widget.open_this(self.get_current_file())
-
-    def get_current_file(self):
-        return "{}.wep".format(self.weapons_name[self.combo.currentText()])
-
-    def prev_item(self):
-        index = self.combo.currentIndex()
-        if index > 0:
-            self.combo.setCurrentIndex(index - 1)
-
-    def next_item(self):
-        index = self.combo.currentIndex()
-        if index < self.combo.count() - 1:
-            self.combo.setCurrentIndex(index + 1)
-
-
-class LevelSelector(QWidget):
-    def __init__(self, parent):
-        super().__init__()
-        self.main_widget = parent
-
-        self.levels_data = json.load(open('VagrantStory_data/level_map_names.json'))
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        self.left_button = QPushButton("◀")
-        self.right_button = QPushButton("▶")
-        self.combo = QComboBox()
-
-        self.left_button.setFixedWidth(30)
-        self.right_button.setFixedWidth(30)
-
-        for zone, rooms in self.levels_data.items():
-            self.combo.addItem('--{}'.format(zone))
-            for room in rooms:
-                self.combo.addItem(room[-1],
-                                   ('ZONE{}{}.ZND'.format('0' * (3 - len(str(room[0]))), room[0]), room[1], room[2]))
-        # self.combo.addItems([self.prepare_list_entry(room[0],room[1],room[2], room[-1]) for rooms in self.levels_data.values() for room in rooms])
-
-        layout.addWidget(self.left_button)
-        layout.addWidget(self.combo)
-        layout.addWidget(self.right_button)
-
-        self.combo.currentTextChanged.connect(self.update_mesh)
-        self.left_button.clicked.connect(self.prev_item)
-        self.right_button.clicked.connect(self.next_item)
-
-    def update_mesh(self):
-        if '--' in self.combo.currentText():
-            return
-        z, i, m = self.combo.currentData()
-        self.main_widget.open_mpd('VagrantStory_data/MAP/{}'.format(m), 'VagrantStory_data/MAP/{}'.format(z))
-        self.main_widget.setWindowTitle('VSTOOL -- {}'.format(self.combo.currentText()))
-
-    def get_current_file(self):
-        print(self.combo.currentText())
-
-    def prev_item(self):
-        index = self.combo.currentIndex()
-        if index > 0:
-            self.combo.setCurrentIndex(index - 1)
-
-    def next_item(self):
-        index = self.combo.currentIndex()
-        if index < self.combo.count() - 1:
-            self.combo.setCurrentIndex(index + 1)
+SEED = random.randint(0, 100)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.texture_list = None
         self.level_selector = None
         self.weapon_selector = None
-        self.setWindowTitle("VSTOOLS")
+        self.setWindowTitle("Vagrant Story Tool")
         self.resize(1920, 1080)
 
         central = QWidget()
@@ -215,27 +57,14 @@ class MainWindow(QMainWindow):
         self.viewport = GLViewport(self)
         layout.addWidget(self.viewport)
 
-        font_id = QFontDatabase.addApplicationFont("animeace2_reg.ttf")
+        font_id = QFontDatabase.addApplicationFont("ui_elements/animeace2_reg.ttf")
         font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
         comic_font = QFont(font_family, 6)
 
         # Load paper texture
-        paper_texture = QPixmap("paper_noise.jpg")  # grayscale or color paper texture
+        paper_texture = QPixmap("ui_elements/paper_noise.jpg")  # grayscale or color paper texture
 
-        hud_text = """
-        🖱 Camera Controls
-        
-        LMB ------------------ Orbit
-        Shift + LMB ---------- Pan
-        MMB ----------------- Dolly
-        Wheel --------------- Zoom
-        Ctrl + Wheel -------- FOV
-
-        W/A/S/D ----------- Move Camera
-        Q/E ----------------- Up/Down
-        H -------------------- Hide HUD"""
-
-        self.hud = ComicHUD(hud_text, comic_font, paper_texture, parent=self.viewport)
+        self.hud = HudComicStyle(HUD_TEXT, comic_font, paper_texture, parent=self.viewport)
         self.hud.move(20, 20)  # top-left corner
         self.hud.show()
 
@@ -265,9 +94,7 @@ class MainWindow(QMainWindow):
     def selector_panel(self):
         box = QGroupBox("Selectors")
         layout = QVBoxLayout(box)
-        weapon_list = glob.glob("VagrantStory_data/**/**.wep", recursive=True)
-
-        self.weapon_selector = ArrowComboWidget(self, weapon_list, self.open_wep)
+        self.weapon_selector = ArrowComboWidget(self)
         self.level_selector = LevelSelector(self)
         layout.addWidget(QLabel('Weapons'))
         layout.addWidget(self.weapon_selector)
@@ -291,11 +118,11 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(btn_open_character)
 
-
         return box
 
     def open_this(self, path):
-        self.open_wep("VagrantStory_data/OBJ/{}".format(path))
+        if path:
+            self.open_wep("VagrantStory_data/OBJ/{}".format(path))
 
     def animation_panel(self):
         box = QGroupBox("Animation")
@@ -343,28 +170,26 @@ class MainWindow(QMainWindow):
         self.checkbox_hud.setChecked(True)
         self.checkbox_hud.checkStateChanged.connect(self.toggle_hud)
         layout.addWidget(self.checkbox_hud)
-        
-        
-        self.checkbox_wireframe = QCheckBox('Wireframe')
-        self.checkbox_wireframe.checkStateChanged.connect(self.toggle_wireframe)
-        layout.addWidget(self.checkbox_wireframe)
 
-        self.checkbox_vertex_colors = QCheckBox('Disable Vertex Colors')
-        self.checkbox_vertex_colors.checkStateChanged.connect(self.toggle_vertex_color)
-        layout.addWidget(self.checkbox_vertex_colors)
+        checkbox_wireframe = QCheckBox('Wireframe')
+        checkbox_wireframe.checkStateChanged.connect(self.toggle_wireframe)
+        layout.addWidget(checkbox_wireframe)
 
-        self.checkbox_scanlines = QCheckBox('Scan lines mode')
-        self.checkbox_scanlines.checkStateChanged.connect(self.toggle_scanline)
-        layout.addWidget(self.checkbox_scanlines)
+        checkbox_vertex_colors = QCheckBox('Disable Vertex Colors')
+        checkbox_vertex_colors.checkStateChanged.connect(self.toggle_vertex_color)
+        layout.addWidget(checkbox_vertex_colors)
 
-        self.checkbox_disable_textures = QCheckBox('Disable Texture')
-        self.checkbox_disable_textures.checkStateChanged.connect(self.toggle_textures)
-        layout.addWidget(self.checkbox_disable_textures)
+        checkbox_scanlines = QCheckBox('Scan lines mode')
+        checkbox_scanlines.checkStateChanged.connect(self.toggle_scanline)
+        layout.addWidget(checkbox_scanlines)
 
-        self.checkbox_gray_background = QCheckBox('Gray Background')
-        self.checkbox_gray_background.checkStateChanged.connect(self.toggle_background)
-        layout.addWidget(self.checkbox_gray_background)
+        checkbox_disable_textures = QCheckBox('Disable Texture')
+        checkbox_disable_textures.checkStateChanged.connect(self.toggle_textures)
+        layout.addWidget(checkbox_disable_textures)
 
+        checkbox_gray_background = QCheckBox('Gray Background')
+        checkbox_gray_background.checkStateChanged.connect(self.toggle_background)
+        layout.addWidget(checkbox_gray_background)
 
         for text in [
             "Use Normal Material",
@@ -473,6 +298,7 @@ class MainWindow(QMainWindow):
         return "0_{}".format(map_file)
 
     def get_reader(self, path, file_type="*"):
+
         self.viewport.clean_scene()
         if not path:
             path, _ = QFileDialog.getOpenFileName(
@@ -531,7 +357,6 @@ class MainWindow(QMainWindow):
             }
 
             batch = self.sort_geometry(batch, mesh, 'mpd')
-
             mesh_batches.append(batch)
 
         self.viewport.load_batches(mesh_batches)
@@ -573,10 +398,6 @@ class MainWindow(QMainWindow):
             for c in b.children:
                 parent_h[bone_index[b]].append(bone_index[c])
         self.viewport.current_animation = seq.animations[0]
-        # shp.skeleton.update()
-        # export_bvh(  seq.animations[10], filename="walk.bvh", skeleton=shp.skeleton )
-        # export_bvh(            'test.bvh',            seq,            0,            parent_h,            [(x.position.x, x.position.y, x.position.z) for x in shp.skeleton.bones],            fps=30)
-
         self.viewport.activeSHP = shp
         self.viewport.activeSEQ = seq
 
@@ -634,14 +455,14 @@ class MainWindow(QMainWindow):
         self.sort_geometry(batch, wep.mesh, 'wep')
         self.viewport.load_batches([batch])
 
-    def sort_geometry(self, batch, mesh, type):
+    def sort_geometry(self, batch, mesh, asset_type):
 
         pos = mesh.geometry.attributes["positions"]
         uv = mesh.geometry.attributes["uvs"]
         idx = mesh.geometry.attributes["indices"]
         col = mesh.geometry.attributes["colors"]
 
-        if type == 'wep':
+        if asset_type == 'wep':
             batch['SkinnedMesh'] = mesh
             batch['Skeleton'] = self.opened_file.skeleton
             batch['skinIndex'] = mesh.geometry.attributes['skin_index']
@@ -681,8 +502,7 @@ class MainWindow(QMainWindow):
         return batch
 
 
-
-class ComicHUD(QWidget):
+class HudComicStyle(QWidget):
     def __init__(self, text: str, font: QFont, texture: QPixmap, parent=None, landscape_factor: float = 2.2):
         super().__init__(parent)
         self.needs_redraw = True
@@ -699,6 +519,43 @@ class ComicHUD(QWidget):
         self.tail_width = 30  # tail half-width
         self.bevel_max = 9  # max random bevel per corner
         self.updateSize()
+
+    @staticmethod
+    def drawPixelatedText(painter: QPainter, text: str, x: int, y: int, font: QFont, scale: int = 3,
+                          color: QColor = QColor(0, 0, 0)):
+        """
+        Draws pixelated text by rendering it at small size then scaling up.
+        :param painter: QPainter to draw on
+        :param text: text to draw
+        :param x, y: top-left position
+        :param font: QFont
+        :param scale: pixelation factor (higher = blockier)
+        :param color: text color
+        """
+        # Measure text
+        metrics = QFontMetrics(font)
+        text_width = metrics.horizontalAdvance(text)
+        text_height = metrics.height()
+
+        # Create a small image
+        img = QImage(text_width, text_height, QImage.Format.Format_ARGB32)
+        img.fill(Qt.GlobalColor.transparent)
+
+        temp_painter = QPainter(img)
+        temp_painter.setFont(font)
+        temp_painter.setPen(color)
+        temp_painter.drawText(0, metrics.ascent(), text)
+        temp_painter.end()
+
+        # Scale up with a nearest-neighbor to pixelate
+        pixelated = img.scaled(
+            text_width * scale,
+            text_height * scale,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.FastTransformation  # must be positional, not keyword
+        )
+
+        painter.drawImage(x, y, pixelated)
 
     def updateText(self, text: str):
         self.text = text
@@ -796,7 +653,7 @@ class ComicHUD(QWidget):
         shadow_path = bubble_path.translated(shadow_offset)
 
         painter.save()
-        painter.setPen(Qt.NoPen)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(0, 0, 0, 255))  # semi-transparent ink
         painter.drawPath(shadow_path)
         painter.restore()
@@ -814,18 +671,125 @@ class ComicHUD(QWidget):
         # --- Draw text ---
         painter.setFont(self.font)
         painter.setPen(QColor(0, 0, 0))
-        metrics = painter.fontMetrics()
+
         x_pad, y_pad = 16, 16
         scale = 2  # how blocky the text is
         y_text = y_pad
         for line in self.text.splitlines():
-            drawPixelatedText(painter, line, x_pad, y_text, self.font, scale=scale, color=QColor(0, 0, 0))
+            self.drawPixelatedText(painter, line, x_pad, y_text, self.font, scale=scale, color=QColor(0, 0, 0))
             metrics = painter.fontMetrics()
             y_text += metrics.height() * scale
 
 
+class ArrowComboBase(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.main_widget = parent
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.left_button = QPushButton("<")
+        self.right_button = QPushButton(">")
+        self.combo = QComboBox()
+
+        self.left_button.setFixedWidth(30)
+        self.right_button.setFixedWidth(30)
+
+        layout.addWidget(self.left_button)
+        layout.addWidget(self.combo)
+        layout.addWidget(self.right_button)
+
+        self.left_button.clicked.connect(self.prev_item)
+        self.right_button.clicked.connect(self.next_item)
+        self.combo.currentIndexChanged.connect(self.on_changed)
+
+    # ---- shared behavior ----
+
+    def prev_item(self):
+        index = self.combo.currentIndex()
+        if index > 0:
+            self.combo.setCurrentIndex(index - 1)
+
+    def next_item(self):
+        index = self.combo.currentIndex()
+        if index < self.combo.count() - 1:
+            self.combo.setCurrentIndex(index + 1)
+
+    # ---- hooks for subclasses ----
+
+    def populate(self):
+        """Override: fill the combo"""
+        raise NotImplementedError
+
+    def on_changed(self, index):
+        """Override: react to selection"""
+        raise NotImplementedError
+
+
+class ArrowComboWidget(ArrowComboBase):
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self.weapons_name = json.load(
+            open('VagrantStory_data/weapon_name_map.txt')
+        )
+
+        self.populate()
+
+    def populate(self):
+        self.combo.addItems(self.weapons_name.keys())
+
+    def on_changed(self, index):
+        current_weapon = self.combo.currentText()
+        if current_weapon:
+            weapon_file_path = "{}.wep".format(self.weapons_name[current_weapon])
+            self.main_widget.open_this(weapon_file_path)
+
+
+class LevelSelector(ArrowComboBase):
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self.levels_data = json.load(
+            open('VagrantStory_data/level_map_names.json')
+        )
+
+        self.populate()
+
+    def populate(self):
+        for zone, rooms in self.levels_data.items():
+            self.combo.addItem('--{}'.format(zone))
+            for room in rooms:
+                self.combo.addItem(
+                    room[-1],
+                    (
+                        f"ZONE{room[0]:03}.ZND",
+                        room[1],
+                        room[2],
+                    )
+                )
+
+    def on_changed(self, index):
+        text = self.combo.currentText()
+        if text.startswith('--'):
+            return
+
+        z, i, m = self.combo.currentData()
+        self.main_widget.open_mpd(
+            'VagrantStory_data/MAP/{}'.format(m),
+            'VagrantStory_data/MAP/{}'.format(z)
+        )
+        self.main_widget.setWindowTitle('Vagrant Story Tool -- {}'.format(text))
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    file = QFile("ui_elements/combinear.qss")
+    file.open(QFile.OpenModeFlag.ReadOnly | QFile.OpenModeFlag.Text)
+    stream = QTextStream(file)
+    app.setStyleSheet(stream.readAll())
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
