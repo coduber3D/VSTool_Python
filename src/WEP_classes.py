@@ -175,6 +175,7 @@ class WEPBone:
         self.mount_id = r.u8()   # for mounting weapons etc.
         self.body_part_id = r.u8()
 
+
         # TODO mode
         # 0 - 2 normal ?
         # 3 - 6 normal + roll 90 degrees

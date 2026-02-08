@@ -4,42 +4,41 @@ import fbx
 from collections import defaultdict
 
 
-def add_skinning(scene, fbx_mesh, skinned_mesh, bone_nodes, ):
+def add_skinning(scene, fbx_mesh, skinned_mesh, bone_nodes):
     skin = fbx.FbxSkin.Create(scene, "Skin")
 
     geom = skinned_mesh.geometry
-    # TODO Skin index needs to be hooked to the geo attributes
-
     skin_indices = geom.attributes["skin_index"]
     skin_weights = geom.attributes["skin_weight"]
 
-    for bone_idx, bone in enumerate(skinned_mesh.skeleton.bones):
-        print(bone.matrix.elements)
+    mesh_node = fbx_mesh.GetNode()
+
+    mesh_global = fbx.FbxAMatrix()
+    mesh_global.SetIdentity()
+
+    for bone_idx, bone in enumerate(skinned_mesh.Skeleton.bones):
+        bone_node = bone_nodes[bone]
+
         cluster = fbx.FbxCluster.Create(scene, bone.name)
-        cluster.SetLink(bone_nodes[bone])
+        cluster.SetLink(bone_node)
         cluster.SetLinkMode(fbx.FbxCluster.ELinkMode.eNormalize)
 
         for v in range(len(skin_indices)):
             for i in range(4):
                 idx = int(skin_indices[v, i])
                 w = float(skin_weights[v, i])
-
                 if idx == bone_idx and w > 0.0:
                     cluster.AddControlPointIndex(v, w)
 
-        # Bind matrices
-        mesh_matrix = fbx.FbxAMatrix()
-        bone_matrix = fbx.FbxAMatrix()
+        bone_global = bone_node.EvaluateGlobalTransform()
 
-        mesh_matrix.SetIdentity()
-        bone_matrix.SetIdentity()
-
-        cluster.SetTransformMatrix(mesh_matrix)
-        cluster.SetTransformLinkMatrix(bone_matrix)
+        cluster.SetTransformMatrix(mesh_global)  # IDENTITY
+        cluster.SetTransformLinkMatrix(bone_global)  # REAL bind pose
 
         skin.AddCluster(cluster)
 
     fbx_mesh.AddDeformer(skin)
+
 
 
 def build_fbx_skeleton(scene, skeleton):
@@ -71,7 +70,7 @@ def build_fbx_skeleton(scene, skeleton):
     return bone_nodes
 
 
-def flatten_mesh(glmesh):
+def flatten_mesh(mesh):
     new_vertices = []
     new_uvs = []
     new_colors = []
@@ -79,20 +78,20 @@ def flatten_mesh(glmesh):
 
     vert_map = {}  # (v_idx, uv_idx) -> new index
 
-    for face in glmesh.faces:
+    for face in mesh.faces:
         new_face = []
         for v_idx, uv_idx in face:
             key = (v_idx, uv_idx)
 
             if key not in vert_map:
                 vert_map[key] = len(new_vertices)
-                new_vertices.append(glmesh.vertices[v_idx])
+                new_vertices.append(mesh.vertices[v_idx])
 
-                if glmesh.uvs is not None:
-                    new_uvs.append(glmesh.uvs[uv_idx])
+                if mesh.uvs is not None:
+                    new_uvs.append(mesh.uvs[uv_idx])
 
-                if glmesh.colors is not None:
-                    new_colors.append(glmesh.colors[v_idx])
+                if mesh.colors is not None:
+                    new_colors.append(mesh.colors[v_idx])
 
             new_face.append(vert_map[key])
 
@@ -100,8 +99,8 @@ def flatten_mesh(glmesh):
 
     return (
         new_vertices,
-        new_uvs if glmesh.uvs is not None else None,
-        new_colors if glmesh.colors is not None else None,
+        new_uvs if mesh.uvs is not None else None,
+        new_colors if mesh.colors is not None else None,
         new_faces,
     )
 
@@ -173,6 +172,10 @@ def export_fbx_scene(path, meshes):
                     new_face.append(vert_map[key])
                 combined_faces.append(new_face)
 
+            if gl_mesh.skinned_mesh:  # SOMTHING BROKE THE MESH ... CHECK THIS FUNCTION
+                bone_nodes = build_fbx_skeleton(scene, gl_mesh.skinned_mesh.Skeleton)
+                add_skinning(scene, fbx_mesh, gl_mesh.skinned_mesh, bone_nodes)
+
         # -------------------------------
         # Create FBX mesh
         # -------------------------------
@@ -180,7 +183,13 @@ def export_fbx_scene(path, meshes):
         fbx_mesh = fbx.FbxMesh.Create(scene, f"Mesh_{path.split('/')[-1].split('.')[0]}")
         fbx_mesh.CreateLayer()
         layer = fbx_mesh.GetLayer(0)
-
+        # -------------------------------
+        # Create node
+        # -------------------------------
+        node = fbx.FbxNode.Create(scene, "{}".format(material_id))
+        node.SetNodeAttribute(fbx_mesh)
+        node.LclScaling.Set(fbx.FbxDouble3(100, 100, 100))
+        node.LclRotation.Set(fbx.FbxDouble3(0, 0, 0))
         # Control points
         fbx_mesh.InitControlPoints(len(combined_vertices))
         for i, v in enumerate(combined_vertices):
@@ -222,19 +231,11 @@ def export_fbx_scene(path, meshes):
                     )
                 )
             layer.SetVertexColors(col_layer)
-        if gl_mesh.skinned_mesh:  # SOMTHING BROKE THE MESH ... CHECK THIS FUNCTION
-            bone_nodes = build_fbx_skeleton(scene, gl_mesh.skinned_mesh.skeleton)
-            add_skinning(scene, fbx_mesh, gl_mesh.skinned_mesh, bone_nodes)
+
         # Normals
         fbx_mesh.GenerateNormals(True)
 
-        # -------------------------------
-        # Create node
-        # -------------------------------
-        node = fbx.FbxNode.Create(scene, "{}".format(material_id))
-        node.SetNodeAttribute(fbx_mesh)
-        node.LclScaling.Set(fbx.FbxDouble3(100, 100, 100))
-        node.LclRotation.Set(fbx.FbxDouble3(0, 0, 0))
+
 
         # -------------------------------
         # Material

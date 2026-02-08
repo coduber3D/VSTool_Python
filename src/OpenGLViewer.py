@@ -5,6 +5,7 @@ from PySide6.QtGui import QMatrix4x4, QVector3D, QImage
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtCore import Qt, QTimer
 from src.FBX_exporter import *
+from src.V3DClasses import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
 import math
@@ -16,6 +17,7 @@ class GLViewport(QOpenGLWidget):
     def __init__(self, parent):
         super().__init__()
 
+        self.draw_bones_mode = False
         self.program = None
         self.bg_shader = None
         self.bg_texture = None
@@ -29,7 +31,7 @@ class GLViewport(QOpenGLWidget):
         self.main_app = parent
         self.target = QVector3D(0, 0, 0)
         self.pan_offset = QVector3D(0, 0, 0)
-        self.distance = 200.0
+
 
         self.rot_x = 20.0
         self.rot_y = 30.0
@@ -53,7 +55,7 @@ class GLViewport(QOpenGLWidget):
         self.scan_time = 0
         self.activeSEQ = None
         self.activeSHP = None
-
+        self.scene_vertices = None
         self.current_animation = None
         self.current_anim_id = 0
         self.anim_time = 0.0
@@ -96,6 +98,27 @@ class GLViewport(QOpenGLWidget):
 
         glBindTexture(GL_TEXTURE_2D, 0)
         return tex_id
+    @staticmethod
+    def compute_bbox(vertices):
+        min_v = QVector3D(vertices[0])
+        max_v = QVector3D(vertices[0])
+
+        for v in vertices[1:]:
+            v = QVector3D(v)
+            min_v.setX(min(min_v.x(), v.x()))
+            min_v.setY(min(min_v.y(), v.y()))
+            min_v.setZ(min(min_v.z(), v.z()))
+
+            max_v.setX(max(max_v.x(), v.x()))
+            max_v.setY(max(max_v.y(), v.y()))
+            max_v.setZ(max(max_v.z(), v.z()))
+
+        center = (min_v + max_v) * 0.5
+        radius = (max_v - center).length()
+
+        return center, radius*0.85
+
+
 
     def load_mesh(self, vertices, uvs, faces, colors=None):
         ctx = self.context()
@@ -109,7 +132,10 @@ class GLViewport(QOpenGLWidget):
             self.colors = colors
         self.makeCurrent()
         self._upload_mesh()
+        self.scene_vertices = []
 
+        for v in self.vertices:
+            self.scene_vertices.append(QVector3D(v[0], v[1], v[2]))
         self.doneCurrent()
         self.update()
 
@@ -137,6 +163,10 @@ class GLViewport(QOpenGLWidget):
 
             mesh.upload()
             self.meshes.append(mesh)
+        self.scene_vertices = []
+        for m in self.meshes:
+            for v in m.vertices:
+                self.scene_vertices.append(QVector3D(v[0],v[1],v[2]))
         self.vertex_count = 1
         self.doneCurrent()
         self.update()
@@ -301,6 +331,54 @@ class GLViewport(QOpenGLWidget):
 
         glMatrixMode(GL_MODELVIEW)
 
+    def extract_position(self, matrix4):
+        # assuming column-major 4x4 matrix
+        return (
+            matrix4.elements[0][3],
+            matrix4.elements[1][3],
+            matrix4.elements[2][3],
+        )
+
+    def build_skeleton_lines(self, bones):
+        lines = []
+
+        for bone in bones:
+            if bone.parent is None:
+                continue
+            print(bone.name)
+            print(bone.matrix.elements)
+
+
+
+
+            bone.parent.updateMatrixWorld()
+            bone.updateMatrixWorld()
+            p0 = self.extract_position(bone.parent.matrixWorld)
+            p1 = self.extract_position(bone.matrixWorld)
+
+            lines.append((p0, p1))
+
+        return lines
+
+    def draw_skeleton(self, lines):
+        glUseProgram(0)
+        glDisable(GL_DEPTH_TEST)
+        glDisable(GL_LIGHTING)
+
+        glLineWidth(2.5)
+
+        glBegin(GL_LINES)
+        for p0, p1 in lines:
+            glColor4f(0.0, 1.0, 0.0, 1.0)  # start color
+            glVertex3f(*p0)
+
+            glColor4f(0.0, 1.0, 0.0, 1.0)  # end color
+            glVertex3f(*p1)
+        glEnd()
+
+        glEnable(GL_DEPTH_TEST)
+
+
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         self.scan_time += 0.016
@@ -334,7 +412,7 @@ class GLViewport(QOpenGLWidget):
         view.lookAt(cam_pos, self.target + self.pan_offset, up)
 
         proj = QMatrix4x4()
-        proj.perspective(self.fov, aspect, 10.0, 5000.0)
+        proj.perspective(self.fov, aspect, 10.0, 10000.0)
 
         model = QMatrix4x4()
         model.scale(-1, -1, 1)
@@ -343,6 +421,7 @@ class GLViewport(QOpenGLWidget):
 
         # ---- Shader ----
         self.program.bind()
+
 
         if self.grey_background:
             glClearColor(0.1, 0.1, 0.1, 1.0)
@@ -381,6 +460,9 @@ class GLViewport(QOpenGLWidget):
                     lambda loc: glUniform1i(loc, int(not self.disable_textures))
                     )
 
+
+
+
         # ---- Texture ----
 
         glActiveTexture(GL_TEXTURE0)
@@ -398,6 +480,20 @@ class GLViewport(QOpenGLWidget):
         glBindTexture(GL_TEXTURE_2D, 0)
 
         self.program.release()
+        if self.draw_bones_mode:
+        # ---- Draw skeleton LAST (no shader) ----
+            glUseProgram(1)
+            glDisable(GL_LIGHTING)
+            glDisable(GL_TEXTURE_2D)
+            # ---- Match fixed-pipeline matrices to shader ----
+            glMatrixMode(GL_PROJECTION)
+            glLoadMatrixf(np.array(proj.data(), dtype=np.float32))
+
+            glMatrixMode(GL_MODELVIEW)
+            glLoadMatrixf(np.array((view * model).data(), dtype=np.float32))
+
+            lines = self.build_skeleton_lines(self.activeSHP.Skeleton.bones)
+            self.draw_skeleton(lines)
 
     def create_gl_texture_from_rgba(self, buffer, width, height):
         self.makeCurrent()
@@ -445,6 +541,11 @@ class GLViewport(QOpenGLWidget):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_H:
             self.main_app.checkbox_hud.setChecked(not self.main_app.checkbox_hud.isChecked())
+        if event.key() == Qt.Key.Key_F:
+            self.fitCameraToScene(self.scene_vertices)
+        if event.key() == Qt.Key.Key_G:
+            self.distance = 5
+            self.target = QVector3D(-250,100,300)
 
         self.keys.add(event.key())
 
@@ -463,7 +564,7 @@ class GLViewport(QOpenGLWidget):
         if event.buttons() & Qt.MouseButton.LeftButton:
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 # PAN
-                pan_speed = 0.2 * self.distance
+                pan_speed = 0.2 * min(self.distance, 50)
                 self.pan_offset -= right * dx * pan_speed
                 self.pan_offset += up * dy * pan_speed
             else:
@@ -475,7 +576,9 @@ class GLViewport(QOpenGLWidget):
         elif event.buttons() & Qt.MouseButton.MiddleButton:
             # DOLLY
             dolly_speed = 1
+
             self.target += forward * dy * dolly_speed
+
 
         self.last_pos = event.position()
         self.update()
@@ -523,7 +626,25 @@ class GLViewport(QOpenGLWidget):
             self.target += move  # FPS-style movement
 
         self.update()
+    def fitCameraToScene(self, vertices):
+        center, radius = self.compute_bbox(vertices)
 
+        # Reset orbit state
+        self.target = center
+        self.pan_offset = QVector3D(0, 0, 0)
+
+        # FOV math
+        aspect = self.width() / max(1, self.height())
+        fov_y = math.radians(self.fov)
+        fov_x = 2.0 * math.atan(math.tan(fov_y * 0.5) * aspect)
+
+        dist_y = radius / math.tan(fov_y * 0.5)
+        dist_x = radius / math.tan(fov_x * 0.5)
+
+        self.distance = max(dist_x, dist_y) * 1.2  # padding
+
+
+        self.update()
 
 class GLMesh:
     def __init__(self, vertices, uvs, faces, colors, texture_id, material_id, skinned_mesh=None, skeleton=None):

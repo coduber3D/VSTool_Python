@@ -1,21 +1,18 @@
-import glob
-import json
 import os
-import random
 import sys
 import uuid
+import glob
 
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import Qt, QTimer, QPoint, QFile, QTextStream
-from PySide6.QtGui import QPixmap, QFontDatabase, QFont, QColor, QPainterPath, QPainter, QFontMetrics, QImage
+from PySide6.QtCore import Qt, QTimer, QFile, QTextStream
+from PySide6.QtGui import  QFontDatabase
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QGroupBox,
-    QPushButton, QLabel, QCheckBox, QGridLayout,
+    QApplication, QMainWindow,
+    QVBoxLayout, QGroupBox,
+     QLabel, QCheckBox, QGridLayout,
     QSpinBox, QFileDialog,
-    QScrollArea, QComboBox
-)
-
+    QScrollArea)
+from ui_elements.ui_elements import *
 from src.MPD import MPD
 from src.OpenGLViewer import GLViewport
 from src.Reader import Reader
@@ -27,7 +24,7 @@ from src.ZND import ZND
 from src.vs_strings import HUD_TEXT
 
 SEQ_TO_DEG = 360.0 / 4096.0
-SEED = random.randint(0, 100)
+
 
 
 class MainWindow(QMainWindow):
@@ -94,12 +91,15 @@ class MainWindow(QMainWindow):
     def selector_panel(self):
         box = QGroupBox("Selectors")
         layout = QVBoxLayout(box)
-        self.weapon_selector = ArrowComboWidget(self)
+        self.weapon_selector = WeaponSelector(self)
         self.level_selector = LevelSelector(self)
+        self.character_selector = CharacterSelector(self)
         layout.addWidget(QLabel('Weapons'))
         layout.addWidget(self.weapon_selector)
         layout.addWidget(QLabel('Levels'))
         layout.addWidget(self.level_selector)
+        layout.addWidget(QLabel('Characters'))
+        layout.addWidget(self.character_selector)
 
         return box
 
@@ -171,25 +171,29 @@ class MainWindow(QMainWindow):
         self.checkbox_hud.checkStateChanged.connect(self.toggle_hud)
         layout.addWidget(self.checkbox_hud)
 
-        checkbox_wireframe = QCheckBox('Wireframe')
-        checkbox_wireframe.checkStateChanged.connect(self.toggle_wireframe)
-        layout.addWidget(checkbox_wireframe)
+        self.checkbox_wireframe = QCheckBox('Wireframe')
+        self.checkbox_wireframe.checkStateChanged.connect(self.toggle_wireframe)
+        layout.addWidget(self.checkbox_wireframe)
 
-        checkbox_vertex_colors = QCheckBox('Disable Vertex Colors')
-        checkbox_vertex_colors.checkStateChanged.connect(self.toggle_vertex_color)
-        layout.addWidget(checkbox_vertex_colors)
+        self.checkbox_vertex_colors = QCheckBox('Disable Vertex Colors')
+        self.checkbox_vertex_colors.checkStateChanged.connect(self.toggle_vertex_color)
+        layout.addWidget(self.checkbox_vertex_colors)
 
-        checkbox_scanlines = QCheckBox('Scan lines mode')
-        checkbox_scanlines.checkStateChanged.connect(self.toggle_scanline)
-        layout.addWidget(checkbox_scanlines)
+        self.checkbox_scanlines = QCheckBox('Scan lines mode')
+        self.checkbox_scanlines.checkStateChanged.connect(self.toggle_scanline)
+        layout.addWidget(self.checkbox_scanlines)
 
-        checkbox_disable_textures = QCheckBox('Disable Texture')
-        checkbox_disable_textures.checkStateChanged.connect(self.toggle_textures)
-        layout.addWidget(checkbox_disable_textures)
+        self.checkbox_disable_textures = QCheckBox('Disable Texture')
+        self.checkbox_disable_textures.checkStateChanged.connect(self.toggle_textures)
+        layout.addWidget(self.checkbox_disable_textures)
 
-        checkbox_gray_background = QCheckBox('Gray Background')
-        checkbox_gray_background.checkStateChanged.connect(self.toggle_background)
-        layout.addWidget(checkbox_gray_background)
+        self.checkbox_gray_background = QCheckBox('Gray Background')
+        self.checkbox_gray_background.checkStateChanged.connect(self.toggle_background)
+        layout.addWidget(self.checkbox_gray_background)
+
+        self.checkbox_show_skeleton = QCheckBox('Show Skeleton')
+        self.checkbox_show_skeleton.checkStateChanged.connect(self.toogle_skeleton)
+        layout.addWidget(self.checkbox_show_skeleton)
 
         for text in [
             "Use Normal Material",
@@ -198,6 +202,10 @@ class MainWindow(QMainWindow):
             layout.addWidget(QCheckBox(text))
 
         return box
+
+    def toogle_skeleton(self):
+        self.viewport.draw_bones_mode = self.checkbox_show_skeleton.isChecked()
+        self.viewport.update()
 
     def toggle_background(self):
         self.viewport.grey_background = self.checkbox_gray_background.isChecked()
@@ -382,7 +390,7 @@ class MainWindow(QMainWindow):
 
         return seq
 
-    def open_shp(self, path=None):
+    def open_shp(self, path=None, autoload_anim=False):
         reader = self.get_reader(path, 'SHP')
         if not reader:
             return
@@ -390,10 +398,15 @@ class MainWindow(QMainWindow):
         shp = SHP(reader)
         shp.read()
         shp.build()
-        seq = self.open_seq()
-        bone_index = {x: shp.skeleton.bones.index(x) for x in shp.skeleton.bones}
+        if autoload_anim:
+            sample_animations = glob.glob('{}**.SEQ'.format(path[:-4]))
+            seq = self.open_seq(sample_animations[0] if len(sample_animations) else '')
+        else:
+            seq = self.open_seq()
+
+        bone_index = {x: shp.Skeleton.bones.index(x) for x in shp.Skeleton.bones}
         parent_h = {}
-        for b in shp.skeleton.bones:
+        for b in shp.Skeleton.bones:
             parent_h[bone_index[b]] = []
             for c in b.children:
                 parent_h[bone_index[b]].append(bone_index[c])
@@ -464,7 +477,7 @@ class MainWindow(QMainWindow):
 
         if asset_type == 'wep':
             batch['SkinnedMesh'] = mesh
-            batch['Skeleton'] = self.opened_file.skeleton
+            batch['Skeleton'] = self.opened_file.Skeleton
             batch['skinIndex'] = mesh.geometry.attributes['skin_index']
             batch['skinWeight'] = mesh.geometry.attributes['skin_weight']
 
@@ -501,287 +514,6 @@ class MainWindow(QMainWindow):
 
         return batch
 
-
-class HudComicStyle(QWidget):
-    def __init__(self, text: str, font: QFont, texture: QPixmap, parent=None, landscape_factor: float = 2.2):
-        super().__init__(parent)
-        self.needs_redraw = True
-        self.text = text
-        self.font = font
-        self.texture = texture
-        self.landscape_factor = landscape_factor
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.jag_count = 10  # jag points per side
-        self.jag_amp_x = 8  # horizontal jag amplitude
-        self.jag_amp_y = 6  # vertical jag amplitude
-        self.tail_height = 50  # tail height
-        self.tail_width = 30  # tail half-width
-        self.bevel_max = 9  # max random bevel per corner
-        self.updateSize()
-
-    @staticmethod
-    def drawPixelatedText(painter: QPainter, text: str, x: int, y: int, font: QFont, scale: int = 3,
-                          color: QColor = QColor(0, 0, 0)):
-        """
-        Draws pixelated text by rendering it at small size then scaling up.
-        :param painter: QPainter to draw on
-        :param text: text to draw
-        :param x, y: top-left position
-        :param font: QFont
-        :param scale: pixelation factor (higher = blockier)
-        :param color: text color
-        """
-        # Measure text
-        metrics = QFontMetrics(font)
-        text_width = metrics.horizontalAdvance(text)
-        text_height = metrics.height()
-
-        # Create a small image
-        img = QImage(text_width, text_height, QImage.Format.Format_ARGB32)
-        img.fill(Qt.GlobalColor.transparent)
-
-        temp_painter = QPainter(img)
-        temp_painter.setFont(font)
-        temp_painter.setPen(color)
-        temp_painter.drawText(0, metrics.ascent(), text)
-        temp_painter.end()
-
-        # Scale up with a nearest-neighbor to pixelate
-        pixelated = img.scaled(
-            text_width * scale,
-            text_height * scale,
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.FastTransformation  # must be positional, not keyword
-        )
-
-        painter.drawImage(x, y, pixelated)
-
-    def updateText(self, text: str):
-        self.text = text
-        self.updateSize()
-        self.update()
-
-    def updateSize(self):
-        """Calculate the widget size based on text and landscape factor."""
-        metrics = self.fontMetrics()
-        lines = self.text.splitlines()
-        text_width = max([metrics.horizontalAdvance(line) for line in lines])
-        text_height = metrics.height() * len(lines)
-
-        padding = 24
-        width = int((text_width + padding) * self.landscape_factor)
-        height = int(text_height + padding + self.tail_height * 2.5)
-        self.resize(width, height)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-
-        w, h = self.width(), self.height() - self.tail_height
-        path = QPainterPath()
-        tail_path = QPainterPath()
-
-        # --- Function to get jagged point with random bevel ---
-        def jagged_x(base, amp):
-            random.seed(SEED)
-            return base + random.randint(-amp, amp)
-
-        def jagged_y(base, amp):
-            random.seed(SEED)
-            return base + random.randint(-amp, amp)
-
-        # --- Top edge ---
-        step = w / self.jag_count
-        x, y = 0, jagged_y(0, self.jag_amp_y)
-        path.moveTo(x, y)
-        for i in range(1, self.jag_count + 1):
-            x = i * step
-            y = jagged_y(0, self.jag_amp_y)
-            # Apply random corner bevel occasionally
-            if i % (self.jag_count // 2) == 0:
-                random.seed(SEED)
-                y += random.randint(-self.bevel_max, self.bevel_max)
-            path.lineTo(x, y)
-
-        # --- Right edge ---
-        step = h / self.jag_count
-        for i in range(1, self.jag_count + 1):
-            x = w + jagged_x(0, self.jag_amp_x)
-            y = i * step
-            if i % (self.jag_count // 2) == 0:
-                random.seed(SEED)
-                x += random.randint(-self.bevel_max, self.bevel_max)
-            path.lineTo(x, y)
-
-        # --- Tail pointing down (centered horizontally) ---
-        tail_center_x = w // 1.2
-        tail_path.lineTo(tail_center_x + self.tail_width, h)
-        tail_path.lineTo(tail_center_x + self.tail_width * 2, h + self.tail_height)
-        tail_path.lineTo(tail_center_x - self.tail_width, h)
-        tail_path.closeSubpath()
-
-        # --- Bottom edge ---
-        step = w / self.jag_count
-        for i in range(1, self.jag_count + 1):
-            x = w - i * step
-            y = h + jagged_y(0, self.jag_amp_y)
-            if i % (self.jag_count // 2) == 0:
-                random.seed(SEED)
-                y -= random.randint(0, self.bevel_max)
-            path.lineTo(x, y)
-
-        # --- Left edge ---
-        step = h / self.jag_count
-        for i in range(1, self.jag_count + 1):
-            x = jagged_x(0, self.jag_amp_x)
-            y = h - i * step
-            if i % (self.jag_count // 2) == 0:
-                random.seed(SEED)
-                x += random.randint(-self.bevel_max, self.bevel_max)
-            path.lineTo(x, y)
-        path.closeSubpath()
-
-        bubble_path = QPainterPath()
-        bubble_path.setFillRule(Qt.FillRule.WindingFill)
-        bubble_path.addPath(path)
-        bubble_path.addPath(tail_path)
-        # --- Comic shadow (ink offset) ---
-
-        shadow_offset = QPoint(6, 6)
-        shadow_path = bubble_path.translated(shadow_offset)
-
-        painter.save()
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 255))  # semi-transparent ink
-        painter.drawPath(shadow_path)
-        painter.restore()
-
-        # Outline
-        painter.setPen(QColor(0, 0, 0))
-        painter.drawPath(bubble_path)
-
-        # Fill
-        painter.save()
-        painter.setClipPath(bubble_path)
-        painter.drawTiledPixmap(self.rect(), self.texture)
-        painter.restore()
-
-        # --- Draw text ---
-        painter.setFont(self.font)
-        painter.setPen(QColor(0, 0, 0))
-
-        x_pad, y_pad = 16, 16
-        scale = 2  # how blocky the text is
-        y_text = y_pad
-        for line in self.text.splitlines():
-            self.drawPixelatedText(painter, line, x_pad, y_text, self.font, scale=scale, color=QColor(0, 0, 0))
-            metrics = painter.fontMetrics()
-            y_text += metrics.height() * scale
-
-
-class ArrowComboBase(QWidget):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.main_widget = parent
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        self.left_button = QPushButton("<")
-        self.right_button = QPushButton(">")
-        self.combo = QComboBox()
-
-        self.left_button.setFixedWidth(30)
-        self.right_button.setFixedWidth(30)
-
-        layout.addWidget(self.left_button)
-        layout.addWidget(self.combo)
-        layout.addWidget(self.right_button)
-
-        self.left_button.clicked.connect(self.prev_item)
-        self.right_button.clicked.connect(self.next_item)
-        self.combo.currentIndexChanged.connect(self.on_changed)
-
-    # ---- shared behavior ----
-
-    def prev_item(self):
-        index = self.combo.currentIndex()
-        if index > 0:
-            self.combo.setCurrentIndex(index - 1)
-
-    def next_item(self):
-        index = self.combo.currentIndex()
-        if index < self.combo.count() - 1:
-            self.combo.setCurrentIndex(index + 1)
-
-    # ---- hooks for subclasses ----
-
-    def populate(self):
-        """Override: fill the combo"""
-        raise NotImplementedError
-
-    def on_changed(self, index):
-        """Override: react to selection"""
-        raise NotImplementedError
-
-
-class ArrowComboWidget(ArrowComboBase):
-    def __init__(self, parent):
-        super().__init__(parent)
-
-        self.weapons_name = json.load(
-            open('VagrantStory_data/weapon_name_map.txt')
-        )
-
-        self.populate()
-
-    def populate(self):
-        self.combo.addItems(self.weapons_name.keys())
-
-    def on_changed(self, index):
-        current_weapon = self.combo.currentText()
-        if current_weapon:
-            weapon_file_path = "{}.wep".format(self.weapons_name[current_weapon])
-            self.main_widget.open_this(weapon_file_path)
-
-
-class LevelSelector(ArrowComboBase):
-    def __init__(self, parent):
-        super().__init__(parent)
-
-        self.levels_data = json.load(
-            open('VagrantStory_data/level_map_names.json')
-        )
-
-        self.populate()
-
-    def populate(self):
-        for zone, rooms in self.levels_data.items():
-            self.combo.addItem('--{}'.format(zone))
-            for room in rooms:
-                self.combo.addItem(
-                    room[-1],
-                    (
-                        f"ZONE{room[0]:03}.ZND",
-                        room[1],
-                        room[2],
-                    )
-                )
-
-    def on_changed(self, index):
-        text = self.combo.currentText()
-        if text.startswith('--'):
-            return
-
-        z, i, m = self.combo.currentData()
-        self.main_widget.open_mpd(
-            'VagrantStory_data/MAP/{}'.format(m),
-            'VagrantStory_data/MAP/{}'.format(z)
-        )
-        self.main_widget.setWindowTitle('Vagrant Story Tool -- {}'.format(text))
 
 
 if __name__ == "__main__":

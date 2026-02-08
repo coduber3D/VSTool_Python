@@ -9,7 +9,9 @@ HUD_TEXT = """
 
         W/A/S/D ----------- Move Camera
         Q/E ----------------- Up/Down
-        H -------------------- Hide HUD"""
+        H -------------------- Hide HUD
+        F ------------------Frame Scene
+        G -------------First person camera"""
 
 
 BG_SHADER_VERTEX = """#version 330 core
@@ -90,6 +92,7 @@ ASSET_SHADER_FRAG = """
             in vec2 v_uv;
             in vec4 v_color;
             out vec4 FragColor;
+            uniform bool u_hasUV;
             
             uniform sampler2D u_texture;
             
@@ -108,7 +111,7 @@ ASSET_SHADER_FRAG = """
                 {
                     vec2 new_uv = vec2(v_uv.x, 1.0 - v_uv.y);
                     texel = texture(u_texture, new_uv);
-                
+                    
                     if (texel.a < 0.5)
                         discard;
                 }

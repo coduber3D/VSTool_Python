@@ -263,12 +263,12 @@ class WEP:
             if b.parent is None:
                 b.updateMatrixWorld(True)
 
-        self.skeleton = Skeleton(skeleton_bones)
+        self.Skeleton = Skeleton(skeleton_bones)
 
     def build_mesh(self):
         self.mesh = SkinnedMesh(self.geometry, self.material)
-        self.mesh.add(self.skeleton.bones[0])
-        self.mesh.bind(self.skeleton)
+        self.mesh.add(self.Skeleton.bones[0])
+        self.mesh.bind(self.Skeleton)
         self.mesh.rotation.x = 3.141592653589793
 
     # ───────────────────────── utils ─────────────────────────
