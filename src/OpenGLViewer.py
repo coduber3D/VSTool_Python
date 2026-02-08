@@ -5,6 +5,7 @@ from PySide6.QtGui import QMatrix4x4, QVector3D, QImage
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtCore import Qt, QTimer
 from src.FBX_exporter import *
+from src.VSTOOLS import rot2quat, rot13_to_rad_func
 from src.V3DClasses import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
@@ -17,6 +18,7 @@ class GLViewport(QOpenGLWidget):
     def __init__(self, parent):
         super().__init__()
 
+        self.dt = None
         self.draw_bones_mode = False
         self.program = None
         self.bg_shader = None
@@ -55,11 +57,11 @@ class GLViewport(QOpenGLWidget):
         self.scan_time = 0
         self.activeSEQ = None
         self.activeSHP = None
-        self.scene_vertices = None
         self.current_animation = None
+        self.scene_vertices = None
         self.current_anim_id = 0
         self.anim_time = 0.0
-        self.playing = True
+        self.playing = False
         self.fps = 30
         self.last_time = time.time()
 
@@ -67,9 +69,12 @@ class GLViewport(QOpenGLWidget):
         self.move_speed = 500.0  # units per second
         self.shift_multiplier = 3  # fast move
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.updateCamera)
+        self.timer.timeout.connect(self.update_time)
         self.timer.start(16)  # ~60 FPS
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
+
 
     @staticmethod
     def load_gl_texture(path):
@@ -119,6 +124,197 @@ class GLViewport(QOpenGLWidget):
         return center, radius*0.85
 
 
+
+    def update_animation(self, dt):
+
+        if not self.playing or not self.current_animation:
+            return
+        if not dt:
+            dt = 1
+        self.anim_time += dt
+        length = self.current_animation.length * 24
+
+        if self.anim_time >= length:
+            self.anim_time %= length
+
+        self.apply_pose(self.current_animation, self.anim_time)
+
+    def eval_scale(self, animation, bone_id, frame):
+        if animation.scale_flags & 0x1:
+            base = animation.scale_per_bone[bone_id]
+            sx = base["x"] / 64.0
+            sy = base["y"] / 64.0
+            sz = base["z"] / 64.0
+        else:
+            sx = sy = sz = 1.0
+
+        if not (animation.scale_flags & 0x2):
+            return sx, sy, sz
+
+        keys = animation.scale_keys_per_bone[bone_id]
+
+        f_acc = 0
+        prev_x = prev_y = prev_z = 0
+
+        for key in keys:
+            kf = key["f"]
+
+            if key["x"] is not None:
+                prev_x = key["x"]
+            if key["y"] is not None:
+                prev_y = key["y"]
+            if key["z"] is not None:
+                prev_z = key["z"]
+
+            for _ in range(kf):
+                if f_acc >= frame:
+                    return sx, sy, sz
+
+                sx += (prev_x / 64.0)
+                sy += (prev_y / 64.0)
+                sz += (prev_z / 64.0)
+                f_acc += 1
+
+        return sx, sy, sz
+
+    def eval_translation(self, animation, frame):
+        base = animation.translation
+        tx = base["x"]
+        ty = base["y"]
+        tz = base["z"]
+
+        keys = animation.translation_keys
+
+        f_acc = 0
+        prev_x = prev_y = prev_z = 0
+
+        for key in keys:
+            kf = key["f"]
+
+            if key["x"] is not None:
+                prev_x = key["x"]
+            if key["y"] is not None:
+                prev_y = key["y"]
+            if key["z"] is not None:
+                prev_z = key["z"]
+
+            for _ in range(kf):
+                if f_acc >= frame:
+                    return tx, ty, tz
+
+                tx += prev_x
+                ty += prev_y
+                tz += prev_z
+                f_acc += 1
+
+        return tx, ty, tz
+
+    def eval_rotation(self, animation, bone_id, frame):
+        # base pose
+        if animation.base_animation_id == -1:
+            base = animation.rotation_per_bone[bone_id]
+        else:
+            base = animation.seq.animations[
+                animation.base_animation_id
+            ].rotation_per_bone[bone_id]
+
+        rx = base['x'] * 2
+        ry = base['y'] * 2
+        rz = base['z'] * 2
+
+        keys = animation.rotation_keys_per_bone[bone_id]
+
+        f_acc = 0
+
+        prev_x = prev_y = prev_z = 0
+
+        for key in keys:
+            kf = key["f"]
+
+            if key["x"] is not None:
+                prev_x = key["x"]
+            if key["y"] is not None:
+                prev_y = key["y"]
+            if key["z"] is not None:
+                prev_z = key["z"]
+
+            for _ in range(kf):
+                if f_acc >= frame:
+                    return rot2quat(
+                        rot13_to_rad_func(rx),
+                        rot13_to_rad_func(ry),
+                        rot13_to_rad_func(rz),
+                    )
+
+                rx += prev_x
+                ry += prev_y
+                rz += prev_z
+                f_acc += 1
+
+        return rot2quat(
+            rot13_to_rad_func(rx),
+            rot13_to_rad_func(ry),
+            rot13_to_rad_func(rz),
+        )
+
+    def time_to_frame(self, time_sec: float) -> int:
+        return int(time_sec / 24)
+
+    def apply_pose(self, animation, time_sec):
+        frame = self.time_to_frame(time_sec)
+
+        skeleton = self.activeSHP.Skeleton
+        bones = skeleton.bones
+
+        for bone_id, bone in enumerate(bones):
+
+            bone.quaternion = self.eval_rotation(animation, bone_id, frame)
+
+            if animation.scale_flags & 0x3:
+                bone.scale = self.eval_scale(animation, bone_id, frame)
+            bone.updateMatrixWorld()
+
+        # root translation
+        tx, ty, tz = self.eval_translation(animation, frame)
+        bones[0].position.x = tx
+        bones[0].position.y = ty
+        bones[0].position.z = tz
+
+
+
+    def apply_animation(self, animation, time):
+        skeleton = self.activeSHP.Skeleton
+        bones = skeleton.bones
+
+        for track in animation.tracks:
+            bone_id = track.bone_id
+            bone = bones[bone_id]
+
+            value = track.sample(time)
+
+            if track.type == "rotation":
+                bone.quaternion = value
+            elif track.type == "scale":
+                bone.scale = value
+            elif track.type == "translation":
+                bone.position = value
+
+    def stop_anim(self):
+        self.playing = False
+        self.anim_time = 0.0
+        self.current_animation = None
+
+    def parse_anim(self, anim_id_input: int) -> int:
+        if not self.activeSEQ:
+            return 0
+
+        try:
+            anim_id = int(anim_id_input)
+        except (ValueError, TypeError):
+            anim_id = 0
+
+        anim_id = max(0, min(anim_id, len(self.activeSEQ.animations) - 1))
+        return anim_id
 
     def load_mesh(self, vertices, uvs, faces, colors=None):
         ctx = self.context()
@@ -345,11 +541,6 @@ class GLViewport(QOpenGLWidget):
         for bone in bones:
             if bone.parent is None:
                 continue
-            print(bone.name)
-            print(bone.matrix.elements)
-
-
-
 
             bone.parent.updateMatrixWorld()
             bone.updateMatrixWorld()
@@ -385,7 +576,7 @@ class GLViewport(QOpenGLWidget):
         if not self.vertex_count:
             self.draw_background_texture()
             return
-
+        self.update_animation(self.dt)
         glPolygonMode(
             GL_FRONT_AND_BACK,
             GL_LINE if self.wireframe_mode else GL_FILL
@@ -595,7 +786,7 @@ class GLViewport(QOpenGLWidget):
 
         self.update()
 
-    def updateCamera(self):
+    def update_time(self):
         if not self.keys:
             return
 
@@ -625,7 +816,13 @@ class GLViewport(QOpenGLWidget):
             move *= speed
             self.target += move  # FPS-style movement
 
-        self.update()
+        current_time = time.time()
+        self.dt = current_time - self.last_time  # delta time in seconds
+        self.last_time = current_time
+
+
+        self.update()  # request redraw
+
     def fitCameraToScene(self, vertices):
         center, radius = self.compute_bbox(vertices)
 

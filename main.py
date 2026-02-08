@@ -410,9 +410,12 @@ class MainWindow(QMainWindow):
             parent_h[bone_index[b]] = []
             for c in b.children:
                 parent_h[bone_index[b]].append(bone_index[c])
-        self.viewport.current_animation = seq.animations[0]
+
         self.viewport.activeSHP = shp
         self.viewport.activeSEQ = seq
+        self.viewport.playing = True
+        self.viewport.current_animation = seq.animations[0]
+
 
         for w in self.texture_list.findChildren(QLabel):
             w.deleteLater()
